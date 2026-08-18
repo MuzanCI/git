@@ -1,7 +1,12 @@
 use auth_git2::GitAuthenticator;
+use git2::ApplyLocation;
 use git2::Commit;
+use git2::Diff;
+use git2::DiffOptions;
+use git2::Direction;
 use git2::FetchOptions;
 use git2::Oid;
+use git2::Patch;
 use git2::RemoteCallbacks;
 use git2::Repository;
 use git2::build::CheckoutBuilder;
@@ -47,6 +52,57 @@ impl GitClient {
         })
     }
 
+    pub fn create_diff(
+        &self,
+        target_dir: &Path,
+        branch: GitBranch,
+        writer: &mut impl std::io::Write,
+    ) -> Result<(), GitClientError> {
+        let repo = git2::Repository::open(target_dir).map_err(|e| GitClientError(e.to_string()))?;
+
+        let diff = {
+            let object = repo
+                .revparse_single(&branch)
+                .map_err(|e| GitClientError(e.to_string()))?;
+            let commit = object
+                .peel_to_commit()
+                .map_err(|e| GitClientError(e.to_string()))?;
+            let branch_tree = commit.tree().map_err(|e| GitClientError(e.to_string()))?;
+            let mut opts = DiffOptions::new();
+
+            repo.diff_tree_to_workdir_with_index(Some(&branch_tree), Some(&mut opts))
+                .map_err(|e| GitClientError(e.to_string()))?
+        };
+
+        for i in 0..diff.deltas().len() {
+            if let Some(mut patch) =
+                Patch::from_diff(&diff, i).map_err(|e| GitClientError(e.to_string()))?
+            {
+                let buf = patch.to_buf().map_err(|e| GitClientError(e.to_string()))?;
+                writer
+                    .write_all(&buf)
+                    .map_err(|e| GitClientError(e.to_string()))?;
+            }
+        }
+
+        writer.flush().map_err(|e| GitClientError(e.to_string()))?;
+
+        Ok(())
+    }
+
+    pub fn apply_diff(&self, diff_file: &Path, target_dir: &Path) -> Result<(), GitClientError> {
+        let repo = Repository::open(target_dir).map_err(|e| GitClientError(e.to_string()))?;
+        let diff = {
+            let buffer = std::fs::read(diff_file).map_err(|e| GitClientError(e.to_string()))?;
+            Diff::from_buffer(&buffer).map_err(|e| GitClientError(e.to_string()))?
+        };
+
+        repo.apply(&diff, ApplyLocation::WorkDir, None)
+            .map_err(|e| GitClientError(e.to_string()))?;
+
+        Ok(())
+    }
+
     pub fn checkout_commit(
         &self,
         url: &Url,
@@ -65,6 +121,16 @@ impl GitClient {
         repo.set_head_detached(commit.id())
             .map_err(|e| GitClientError(e.to_string()))?;
 
+        Ok(())
+    }
+
+    pub fn checkout_branch(
+        &self,
+        url: &Url,
+        branch: &GitBranch,
+        target_dir: &Path,
+    ) -> Result<(), GitClientError> {
+        self.shallow_clone(url, branch, target_dir)?;
         Ok(())
     }
 
@@ -88,14 +154,11 @@ impl GitClient {
             let mut repo_builder = RepoBuilder::new();
             repo_builder.fetch_options(fetch_opts).branch(branch);
 
-            eprintln!("Shallow clone of branch [{}] from [{}]...", branch, url);
-
             repo_builder
                 .clone(url.as_str(), target_dir)
                 .map_err(|e| GitClientError(e.to_string()))?
         };
 
-        eprintln!("Shallow clone success!");
         Ok(repo)
     }
 
@@ -212,6 +275,46 @@ impl GitClient {
             commit_sha, branch
         )))
     }
+
+    pub fn get_remote(&self, target_dir: &Path, name: &str) -> Result<GitRemote, GitClientError> {
+        let repo = Repository::open(target_dir).map_err(|e| GitClientError(e.to_string()))?;
+        let remote = {
+            let mut remote = repo
+                .find_remote(name)
+                .map_err(|e| GitClientError(e.to_string()))?;
+            let mut cbs = RemoteCallbacks::new();
+            cbs.credentials(self.git_auth.credentials(&self.git_config));
+            remote
+                .connect_auth(Direction::Fetch, Some(cbs), None)
+                .map_err(|e| GitClientError(e.to_string()))?;
+            remote
+        };
+
+        let branch = {
+            let branch_buf = remote
+                .default_branch()
+                .map_err(|e| GitClientError(e.to_string()))?;
+            let branch_vec = branch_buf.to_ascii_lowercase();
+            let branch_str =
+                String::from_utf8(branch_vec).map_err(|e| GitClientError(e.to_string()))?;
+            branch_str
+                .strip_prefix("refs/heads/")
+                .unwrap_or(branch_str.as_str())
+                .to_string()
+        };
+
+        let url = remote
+            .url()
+            .map_err(|e| GitClientError(e.to_string()))?
+            .parse::<GitCloneUrl>()
+            .map_err(|e| GitClientError(e.to_string()))?;
+
+        Ok(GitRemote {
+            name: name.to_string(),
+            branch,
+            url,
+        })
+    }
 }
 
 pub type GitCloneUrl = Url;
@@ -221,31 +324,4 @@ pub struct GitRemote {
     pub name: String,
     pub branch: String,
     pub url: GitCloneUrl,
-}
-
-pub fn get_remote(target_dir: &Path, name: &str) -> Result<GitRemote, GitClientError> {
-    let repo = Repository::open(target_dir).map_err(|e| GitClientError(e.to_string()))?;
-    let remote = repo
-        .find_remote(name)
-        .map_err(|e| GitClientError(e.to_string()))?;
-
-    let branch = {
-        let branch_buf = remote
-            .default_branch()
-            .map_err(|e| GitClientError(e.to_string()))?;
-        let branch_vec = branch_buf.to_ascii_lowercase();
-        String::from_utf8(branch_vec).map_err(|e| GitClientError(e.to_string()))?
-    };
-
-    let url = remote
-        .url()
-        .map_err(|e| GitClientError(e.to_string()))?
-        .parse::<GitCloneUrl>()
-        .map_err(|e| GitClientError(e.to_string()))?;
-
-    Ok(GitRemote {
-        name: name.to_string(),
-        branch,
-        url,
-    })
 }
