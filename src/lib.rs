@@ -14,7 +14,6 @@ use git2::build::RepoBuilder;
 use serde::Deserialize;
 use serde::Serialize;
 use std::path::Path;
-use url::ParseError;
 use url::Url;
 
 /// A git branch name.
@@ -50,6 +49,36 @@ impl GitClient {
             git_config,
             git_auth,
         })
+    }
+
+    pub fn get_commit(&self, target_dir: &Path) -> Result<GitCommitSha, GitClientError> {
+        let repo = git2::Repository::open(target_dir).map_err(|e| GitClientError(e.to_string()))?;
+
+        let obj = repo
+            .head()
+            .and_then(|head| head.resolve())
+            .and_then(|head| head.peel(git2::ObjectType::Commit))
+            .map_err(|e| GitClientError(e.to_string()))?;
+
+        obj.into_commit()
+            .and_then(|commit| Ok(commit.id().to_string()))
+            .map_err(|_| GitClientError("not a commit".to_string()))
+    }
+
+    pub fn get_branch(&self, target_dir: &Path) -> Result<GitBranch, GitClientError> {
+        let repo = git2::Repository::open(target_dir).map_err(|e| GitClientError(e.to_string()))?;
+
+        let head = repo.head().map_err(|e| GitClientError(e.to_string()))?;
+
+        if head.is_branch() {
+            let branch = head
+                .shorthand()
+                .map_err(|e| GitClientError(e.to_string()))?;
+            return Ok(branch.to_string());
+        }
+
+        let commit = self.get_commit(target_dir)?;
+        Ok(format!("(HEAD detached at {})", commit))
     }
 
     pub fn create_diff(
