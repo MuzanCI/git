@@ -309,11 +309,7 @@ impl GitClient {
             .parse::<GitCloneUrl>()
             .map_err(|e| GitClientError(e.to_string()))?;
 
-        Ok(GitRemote {
-            name: name.to_string(),
-            branch,
-            url,
-        })
+        Ok(GitRemote { branch, url })
     }
 }
 
@@ -321,7 +317,6 @@ pub type GitCloneUrl = Url;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitRemote {
-    pub name: String,
     pub branch: String,
     pub url: GitCloneUrl,
 }
