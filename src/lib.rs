@@ -61,7 +61,7 @@ impl GitClient {
             .map_err(|e| GitClientError(e.to_string()))?;
 
         obj.into_commit()
-            .and_then(|commit| Ok(commit.id().to_string()))
+            .map(|commit| commit.id().to_string())
             .map_err(|_| GitClientError("not a commit".to_string()))
     }
 
@@ -292,10 +292,10 @@ impl GitClient {
                     "Failed to fetch commit [{}] with depth [{}]: {:#}",
                     commit_sha, depth, e
                 );
-            } else if let Ok(target_oid) = Oid::from_str(commit_sha) {
-                if let Ok(commit_object) = repo.find_commit(target_oid) {
-                    return Ok(commit_object);
-                }
+            } else if let Ok(target_oid) = Oid::from_str(commit_sha)
+                && let Ok(commit_object) = repo.find_commit(target_oid)
+            {
+                return Ok(commit_object);
             }
         }
 
