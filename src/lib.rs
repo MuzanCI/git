@@ -27,7 +27,7 @@ pub type GitTreeSha = String;
 
 #[derive(Debug, thiserror::Error)]
 #[error("{0}")]
-pub struct GitClientError(pub String);
+pub struct GitClientError(String);
 
 pub struct GitClient {
     git_config: git2::Config,
