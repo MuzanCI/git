@@ -8,4 +8,5 @@ auth-git2 = "0.6.0"
 git2 = "0.21.0"
 serde = "1.0.229"
 thiserror = "2.0.20"
+muzanci-observability = { path = "../muzanci-observability" }
 url = "2.5.8"
